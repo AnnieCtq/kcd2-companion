@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chronicle of Bohemia</title>
+  <meta name="description" content="Digital companion for the KCD2-inspired RPG Monopoly campaign: campaign status, Glory, clues and the treasury ledger.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=IM+Fell+English:ital@0;1&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="masthead">
+    <div class="masthead-inner">
+      <h1>Chronicle of Bohemia</h1>
+      <p class="motto">We win the main story together, but the player with the most Glory becomes Champion of Bohemia if the party succeeds.</p>
+    </div>
+  </header>
+
+  <main id="app" class="wrap"></main>
+
+  <footer class="wrap footer">
+    <span>Kept in this browser only.</span>
+    <button type="button" class="link" data-action="export-json">Save chronicle (.json)</button>
+    <label class="link">Load chronicle<input type="file" accept="application/json" id="import-file" hidden></label>
+    <button type="button" class="link danger" data-action="new-game">Begin a new game</button>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
