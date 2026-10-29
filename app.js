@@ -5,6 +5,7 @@
   "use strict";
 
   const STORAGE_KEY = "kcd2-companion-v1";
+  const GUIDE_SEEN_KEY = "kcd2-companion-guide-seen";
   const DEFAULT_START_CASH = 1000;
   const BONUS_CAP = 2; // normal cap on bonuses to the final check
   const COLORS = ["#7a1f1a", "#2f5d8a", "#3f6a35", "#a87b1e"];
@@ -558,6 +559,8 @@
     const a = el.dataset.action;
     const id = el.dataset.id;
 
+    if (a === "open-guide") { openGuide(); return; }
+    if (a === "close-guide") { $("#guide").close(); return; }
     if (a === "tab") { ui.tab = el.dataset.tab; render(); return; }
     if (a === "undo") { undo(); return; }
 
@@ -729,6 +732,21 @@
   // Keep the rent "paid to" field in step with the selected type after each render.
   const observer = new MutationObserver(() => syncPayee(document.querySelector('form[data-form="txn"]')));
   observer.observe(document.getElementById("app"), { childList: true });
+
+  // ---------- user guide ----------
+
+  function openGuide() {
+    const dlg = $("#guide");
+    if (typeof dlg.showModal === "function") dlg.showModal(); else dlg.setAttribute("open", "");
+    $(".guide-fab").classList.remove("unseen");
+    try { localStorage.setItem(GUIDE_SEEN_KEY, "1"); } catch (e) { /* ignore */ }
+  }
+
+  // Clicking the dimmed backdrop closes the guide.
+  $("#guide").addEventListener("click", (ev) => { if (ev.target === ev.currentTarget) ev.currentTarget.close(); });
+
+  // Pulse the guide button until a new visitor has opened it once.
+  try { if (!localStorage.getItem(GUIDE_SEEN_KEY)) $(".guide-fab").classList.add("unseen"); } catch (e) { /* ignore */ }
 
   render();
 })();
