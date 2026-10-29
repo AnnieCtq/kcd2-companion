@@ -155,6 +155,8 @@
     return e;
   }
 
+  const sfx = (name, delay) => { if (window.SFX) window.SFX.play(name, delay); };
+
   function toast(msg) {
     const old = $(".toast");
     if (old) old.remove();
@@ -309,6 +311,7 @@
     const cash = card.cash ? rollRange(card.cash) : 0;
     const drawId = uid();
     const name = pname(pid);
+    ui.flipId = drawId;
     const parts = [];
     if (cash) parts.push(`${cash > 0 ? "+" : "−"}${gr(Math.abs(cash))}`);
     if (card.glory) parts.push(`+${card.glory.amount} Glory`);
@@ -334,6 +337,10 @@
       }
       st.draws.unshift(draw);
     });
+    ui.flipId = null; // animate the flip only on the render that revealed it
+    sfx("flip");
+    const outcome = [cash > 0 && "coins", cash < 0 && "loss", card.glory && "glory", card.clue && "clue"].filter(Boolean);
+    outcome.forEach((name, i) => sfx(name, 550 + i * 380));
   }
 
   function drawOutcome(d) {
@@ -358,12 +365,15 @@
     const last = state.draws[0];
     const lastCard = last && cardById(last.cardId);
     const shown = lastCard ? `
-      <article class="scenario-card kind-${lastCard.kind}" aria-live="polite">
-        <div class="kicker">${esc(CARD_KINDS[lastCard.kind] || lastCard.kind)} · drawn by ${esc(pname(last.playerId))}</div>
-        <h3 class="scenario-title">${esc(lastCard.title)}</h3>
-        <p class="scenario-text">${esc(lastCard.text)}</p>
-        <div class="scenario-result">${drawOutcome(last)}</div>
-      </article>` : `<div class="scenario-card empty-card"><p class="empty">Choose who is drawing, and a card will be turned over and applied to them.</p></div>`;
+      <div class="card-flip ${last.id === ui.flipId ? "flipping" : ""}">
+        <article class="scenario-card card-front kind-${lastCard.kind}" aria-live="polite">
+          <div class="kicker">${esc(CARD_KINDS[lastCard.kind] || lastCard.kind)} · drawn by ${esc(pname(last.playerId))}</div>
+          <h3 class="scenario-title">${esc(lastCard.title)}</h3>
+          <p class="scenario-text">${esc(lastCard.text)}</p>
+          <div class="scenario-result">${drawOutcome(last)}</div>
+        </article>
+        <div class="card-back" aria-hidden="true"><span class="card-back-emblem"></span></div>
+      </div>` : `<div class="scenario-card empty-card"><p class="empty">Choose who is drawing, and a card will be turned over and applied to them.</p></div>`;
 
     const pileLeft = state.deck.pile.filter((id) => cardById(id) && !state.deck.removed.includes(id)).length;
     const questLeft = allCards().filter((c) => c.clue && !state.deck.removed.includes(c.id)).length;
@@ -864,13 +874,18 @@
     if (a === "close-guide") { $("#guide").close(); return; }
     if (a === "draw-card") { drawCard(el.dataset.player); return; }
     if (a === "tab") { ui.tab = el.dataset.tab; render(); return; }
-    if (a === "undo") { undo(); return; }
+    if (a === "undo") { if (undoStack.length) sfx("undo"); undo(); return; }
+    if (a === "toggle-sound") {
+      if (window.SFX) { window.SFX.setMuted(!window.SFX.isMuted()); syncSoundToggle(); sfx("coins"); }
+      return;
+    }
 
     if (a === "set-status") {
       const s = el.dataset.status;
       if (s === state.status) return;
       if ((s === "success" || s === "unresolved") && !confirm(`Declare the campaign ${s === "success" ? "a success" : "unresolved"}?`)) return;
       commit(`Campaign status set to ${statusLabel(s)}`, (st) => { st.status = s; });
+      sfx(s === "success" ? "triumph" : s === "unresolved" ? "lament" : "bell");
       if (s === "success" || s === "unresolved") { ui.tab = "finale"; render(); }
       return;
     }
@@ -914,6 +929,7 @@
       });
       ui.selectedClues.clear();
       render();
+      sfx("clue");
       return;
     }
 
@@ -968,6 +984,7 @@
       commit(`${pname(f.playerId)} ${amount > 0 ? "earns" : "loses"} ${Math.abs(amount)} Glory: ${cat.label}${f.note ? ` (${f.note.trim()})` : ""}`, (st) => {
         st.glory.push({ id: uid(), ts: Date.now(), chapter: st.status, playerId: f.playerId, category: f.category, amount, note: (f.note || "").trim() });
       });
+      sfx(amount > 0 ? "glory" : "loss");
       toast(`${signed(amount)} Glory to ${pname(f.playerId)}`);
       return;
     }
@@ -981,6 +998,7 @@
         st.clues.push({ id: clueId, ts: Date.now(), title, discovererId: f.discovererId, chapter: f.chapter, glory, spent: false });
         if (glory) st.glory.push({ id: uid(), ts: Date.now(), chapter: f.chapter, playerId: f.discovererId, category: "clue", amount: glory, note: title, clueId });
       });
+      sfx("clue");
       toast("Clue added to the party's evidence");
       return;
     }
@@ -994,6 +1012,7 @@
       commit(`${tt.label}: ${who}, ${gr(amount)}${f.note ? ` (${f.note.trim()})` : ""}`, (st) => {
         st.txns.push({ id: uid(), ts: Date.now(), chapter: st.status, type: f.type, playerId: f.playerId, payeeId: tt.needsPayee ? f.payeeId : null, amount, note: (f.note || "").trim() });
       });
+      sfx(tt.sign > 0 || tt.needsPayee ? "coins" : "loss");
       toast("Recorded in the ledger");
     }
   });
@@ -1050,6 +1069,19 @@
   // Keep the rent "paid to" field in step with the selected type after each render.
   const observer = new MutationObserver(() => syncPayee(document.querySelector('form[data-form="txn"]')));
   observer.observe(document.getElementById("app"), { childList: true });
+
+  // ---------- sound toggle ----------
+
+  function syncSoundToggle() {
+    const btn = $(".sound-toggle");
+    if (!btn || !window.SFX) return;
+    const muted = window.SFX.isMuted();
+    btn.setAttribute("aria-pressed", String(!muted));
+    btn.title = muted ? "Sound is off" : "Sound is on";
+    btn.querySelector(".sound-label").textContent = muted ? "Sound off" : "Sound on";
+    btn.querySelector(".sound-icon").textContent = muted ? "🔇" : "🔔";
+  }
+  syncSoundToggle();
 
   // ---------- user guide ----------
 
