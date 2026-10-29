@@ -4,6 +4,6 @@
   "private": true,
   "description": "Chronicle of Bohemia: digital companion for the KCD2 RPG Monopoly campaign",
   "scripts": {
-    "test": "node --check app.js && node --check cards.js && node --check sound.js"
+    "test": "node --check app.js && node --check cards.js && node --check sound.js && node --check sync.js"
   }
 }

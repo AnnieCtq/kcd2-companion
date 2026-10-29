@@ -79,8 +79,14 @@
     return blankState();
   }
 
-  function save() {
+  function saveLocal() {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) { /* ignore */ }
+  }
+
+  // Every local change is saved and, during live play, sent to the other phones.
+  function save() {
+    saveLocal();
+    if (window.Sync) window.Sync.push(state);
   }
 
   // Wraps every mutation so it can be undone and is logged to the chronicle.
@@ -871,6 +877,17 @@
     const id = el.dataset.id;
 
     if (a === "open-guide") { openGuide(); return; }
+    if (a === "open-live") { openLive(); return; }
+    if (a === "close-live") { $("#live").close(); return; }
+    if (a === "live-host") { window.Sync.host(); return; }
+    if (a === "live-leave") { window.Sync.leave(); return; }
+    if (a === "live-share") {
+      const link = window.Sync.joinLink();
+      if (navigator.share) navigator.share({ title: "Join our Chronicle of Bohemia game", text: `Join code ${window.Sync.info().code}`, url: link }).catch(() => {});
+      else if (navigator.clipboard) navigator.clipboard.writeText(link).then(() => toast("Join link copied"), () => toast(link));
+      else toast(link);
+      return;
+    }
     if (a === "close-guide") { $("#guide").close(); return; }
     if (a === "draw-card") { drawCard(el.dataset.player); return; }
     if (a === "tab") { ui.tab = el.dataset.tab; render(); return; }
@@ -967,6 +984,13 @@
     if (!kind) return;
     ev.preventDefault();
     const f = Object.fromEntries(new FormData(form).entries());
+
+    if (kind === "live-join") {
+      if (state.players.length && !confirm("Joining replaces the game on this phone with the host's game. Continue?")) return;
+      ui.joinCode = "";
+      window.Sync.join(f.code);
+      return;
+    }
 
     if (kind === "setup") {
       const players = [0, 1, 2, 3]
@@ -1070,6 +1094,113 @@
   const observer = new MutationObserver(() => syncPayee(document.querySelector('form[data-form="txn"]')));
   observer.observe(document.getElementById("app"), { childList: true });
 
+  // ---------- live play ----------
+
+  let pendingRender = false;
+  const editingInApp = () => {
+    const el = document.activeElement;
+    return el && $("#app").contains(el) && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName);
+  };
+
+  // Hooks for sync.js: hand over the game, and take in a change from another phone.
+  window.KCD2 = {
+    getState: () => state,
+    applyRemote(incoming) {
+      const prevDraw = state.draws && state.draws[0] && state.draws[0].id;
+      state = Object.assign(blankState(), incoming);
+      undoStack.length = 0; // undo only covers this device's own steps since the last shared change
+      ui.selectedClues.clear();
+      saveLocal();
+      const draw = state.draws[0];
+      if (draw && draw.id !== prevDraw) { ui.flipId = draw.id; sfx("flip"); }
+      // Don't wipe out something a player is typing; redraw when they leave the field.
+      if (editingInApp()) pendingRender = true; else render();
+      ui.flipId = null;
+      renderLiveIndicator();
+    },
+  };
+
+  document.addEventListener("focusout", () => {
+    if (!pendingRender) return;
+    setTimeout(() => { if (pendingRender && !editingInApp()) { pendingRender = false; render(); } }, 0);
+  });
+
+  const LIVE_TEXT = {
+    starting: "Opening the game for other phones…",
+    hosting: "Your game is open. Other phones can join with this code.",
+    connecting: "Connecting to the host…",
+    joined: "Connected. Changes on any phone appear on every phone.",
+    reconnecting: "Lost the host for a moment. Reconnecting…",
+  };
+
+  function renderLive() {
+    const body = $("#live-body");
+    if (!body || !window.Sync) return;
+    const info = window.Sync.info();
+    let html;
+    if (!info.role) {
+      html = `
+        ${info.status === "error" ? `<p class="live-error">${esc(info.detail)}</p>` : ""}
+        <p>Everyone can follow and update the same game on their own phone. One phone hosts, and the others join with its code.</p>
+        <div class="live-options">
+          <div class="live-option">
+            <h3>Host this game</h3>
+            <p class="note">Shares the game on this device${state.players.length ? ` (${state.players.map((p) => esc(p.name)).join(", ")})` : ""}. Keep this screen open while you play.</p>
+            <button class="btn" data-action="live-host">Host this game</button>
+          </div>
+          <div class="live-option">
+            <h3>Join a game</h3>
+            <form class="row" data-form="live-join">
+              <label class="field">Code from the host<input name="code" class="live-code-input" maxlength="8" autocomplete="off" autocapitalize="characters" value="${esc(ui.joinCode || "")}" required></label>
+              <button class="btn" type="submit">Join</button>
+            </form>
+            ${state.players.length ? '<p class="note">Joining replaces the game on this phone with the host\'s game.</p>' : ""}
+          </div>
+        </div>
+        <p class="note">Phones connect directly to each other through a free public service, with nothing to set up. Your game isn't stored online.</p>`;
+    } else if (info.role === "host") {
+      const link = window.Sync.joinLink();
+      html = `
+        <p>${esc(info.detail || LIVE_TEXT[info.status] || "")}</p>
+        <div class="live-code">${esc(info.code)}</div>
+        <p class="muted" style="text-align:center">${info.guests} other phone${info.guests === 1 ? "" : "s"} connected</p>
+        <div class="row" style="justify-content:center">
+          <button class="btn" data-action="live-share">${navigator.share ? "Send the join link" : "Copy the join link"}</button>
+          <button class="btn ghost" data-action="live-leave">Stop sharing</button>
+        </div>
+        <p class="note" style="text-align:center;overflow-wrap:anywhere">${esc(link)}</p>`;
+    } else {
+      html = `
+        <p>${esc(LIVE_TEXT[info.status] || "")}</p>
+        <div class="live-code">${esc(info.code)}</div>
+        <div class="row" style="justify-content:center"><button class="btn ghost" data-action="live-leave">Leave the live game</button></div>
+        <p class="note">After leaving, this phone keeps a copy of the game as it was.</p>`;
+    }
+    body.innerHTML = html;
+  }
+
+  function renderLiveIndicator() {
+    const pill = $(".live-pill");
+    if (!pill || !window.Sync) return;
+    const info = window.Sync.info();
+    pill.hidden = !info.role;
+    if (!info.role) return;
+    const ok = info.status === "hosting" || info.status === "joined";
+    pill.classList.toggle("warn", !ok);
+    pill.querySelector(".live-pill-text").textContent = info.role === "host"
+      ? `Live · ${info.code} · ${info.guests + 1} phone${info.guests ? "s" : ""}`
+      : ok ? `Live · ${info.code}` : "Reconnecting…";
+  }
+
+  function openLive() {
+    renderLive();
+    const dlg = $("#live");
+    if (typeof dlg.showModal === "function") { if (!dlg.open) dlg.showModal(); } else dlg.setAttribute("open", "");
+  }
+
+  document.addEventListener("sync-status", () => { renderLive(); renderLiveIndicator(); });
+  $("#live").addEventListener("click", (ev) => { if (ev.target === ev.currentTarget) ev.currentTarget.close(); });
+
   // ---------- sound toggle ----------
 
   function syncSoundToggle() {
@@ -1099,4 +1230,17 @@
   try { if (!localStorage.getItem(GUIDE_SEEN_KEY)) $(".guide-fab").classList.add("unseen"); } catch (e) { /* ignore */ }
 
   render();
+
+  // Resume live play after a refresh, or offer to join from a shared link.
+  if (window.Sync) {
+    const joinParam = new URLSearchParams(location.search).get("join");
+    if (joinParam) {
+      history.replaceState(null, "", location.pathname);
+      const info = window.Sync.info();
+      if (!(info.role === "guest" && info.code === joinParam.toUpperCase())) { ui.joinCode = joinParam.toUpperCase(); openLive(); }
+    } else {
+      window.Sync.resume();
+    }
+    renderLiveIndicator();
+  }
 })();
