@@ -58,11 +58,13 @@
       <h3>3. During play</h3>
       <ul>
         <li><strong>Clues:</strong> when a quest lead pays off, record the clue and who found it. The finder gets +1 Glory automatically, and the clue joins the party's shared evidence.</li>
-        <li><strong>Glory:</strong> award it for a significant quest contribution, a tournament win or a character achievement. Never for rent or buying property.</li>
-        <li><strong>Treasury:</strong> log rent (who paid whom), event money gained or lost, quest rewards and purchases. Balances update on their own.</li>
+        <li><strong>Glory:</strong> award it for a significant quest contribution, a tournament win or a character achievement. Never for money or buying gear.</li>
+        <li><strong>Treasury:</strong> log event money gained or lost and quest rewards. Merchant purchases are added automatically. Balances update on their own.</li>
       </ul>
       <p><strong>Scenario cards:</strong> when a player lands on an event, open the <strong>Scenario cards</strong> tab and press their name. A random card is turned over and its money, Glory or clue goes straight to that player.</p>
-      <p>The <strong>Campaign</strong> tab has the clue and Glory forms side by side for quick use mid-turn.</p>
+      <p><strong>Rounds and the merchant:</strong> press <strong>Next round</strong> once everyone has had a turn. Every 3rd round the merchant opens in the <strong>Armoury</strong>, where players trade up from the starter Hunting Sword and Padded Gambeson. Old gear sells back for half its price.</p>
+      <p><strong>Combat and tournaments:</strong> open the <strong>Combat</strong> tab and pick the two sides. Each swing is two rolls: a d20 to see if the slash lands, then the weapon's damage dice. Enter real dice or press <strong>Roll for me</strong>. The app shows the odds and the maths for every swing, and the winner of a tournament bout can be given Glory with one tap.</p>
+            <p>The <strong>Campaign</strong> tab has the clue and Glory forms side by side for quick use mid-turn.</p>
 
       <h3>4. The finale</h3>
       <ol>
@@ -77,7 +79,7 @@
         <li>The bell button at the top turns the sounds on or off for this device.</li>
         <li><strong>↶ Undo</strong> (next to the tabs) reverses the last action. Small ✕ buttons remove single entries.</li>
         <li>Everything is saved in this browser. Use <strong>Save chronicle</strong> at the bottom to keep a copy or move the game to another device, and <strong>Load chronicle</strong> to bring it back.</li>
-        <li>After the game, open the <strong>Report</strong> tab: it totals rent, event money and quest rewards, shows the evidence for the review's five questions, and lets you record the table's answers and download it all.</li>
+        <li>After the game, open the <strong>Report</strong> tab: it totals merchant spending, event money and quest rewards, shows the evidence for the review's five questions, and lets you record the table's answers and download it all.</li>
       </ul>
     </div>
     <div class="guide-foot">
@@ -96,6 +98,8 @@
   <script src="sound.js"></script>
   <script src="sync.js"></script>
   <script src="cards.js"></script>
+  <script src="gear.js"></script>
+  <script src="combat.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

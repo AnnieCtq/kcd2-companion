@@ -28,11 +28,13 @@
   ];
 
   const TXN_TYPES = [
-    { id: "rent", label: "Rent paid", sign: -1, needsPayee: true },
     { id: "event_gain", label: "Event money gained", sign: 1 },
     { id: "event_loss", label: "Event money lost", sign: -1 },
     { id: "quest_reward", label: "Quest reward", sign: 1 },
-    { id: "purchase", label: "Property purchase", sign: -1 },
+    { id: "purchase", label: "Merchant purchase", sign: -1 },
+    { id: "sale", label: "Gear sold to merchant", sign: 1 },
+    // Properties and rent were replaced by the merchant; kept so older saved games still add up.
+    { id: "rent", label: "Rent paid", sign: -1, needsPayee: true, legacy: true },
     { id: "other_gain", label: "Other income", sign: 1 },
     { id: "other_loss", label: "Other cost", sign: -1 },
   ];
@@ -40,6 +42,8 @@
   const TABS = [
     { id: "campaign", label: "Campaign" },
     { id: "cards", label: "Scenario cards" },
+    { id: "armoury", label: "Armoury" },
+    { id: "combat", label: "Combat" },
     { id: "glory", label: "Glory" },
     { id: "clues", label: "Clues" },
     { id: "treasury", label: "Treasury" },
@@ -63,6 +67,9 @@
       deck: { pile: [], removed: [] }, // card ids still to draw; clue cards removed once drawn
       draws: [],
       report: { answers: {}, notes: {} },
+      round: 1,
+      kit: {},      // playerId -> { weapon, armour } ids from gear.js
+      combat: null, // the fight in progress, shared with every phone
       log: [],
     };
   }
@@ -144,7 +151,7 @@
 
   function economy(pid) {
     const p = player(pid);
-    const e = { start: p.startCash, rentPaid: 0, rentReceived: 0, eventGain: 0, eventLoss: 0, quest: 0, purchase: 0, otherGain: 0, otherLoss: 0 };
+    const e = { start: p.startCash, rentPaid: 0, rentReceived: 0, eventGain: 0, eventLoss: 0, quest: 0, purchase: 0, sold: 0, otherGain: 0, otherLoss: 0 };
     for (const t of state.txns) {
       if (t.playerId === pid) {
         if (t.type === "rent") e.rentPaid += t.amount;
@@ -152,12 +159,13 @@
         else if (t.type === "event_loss") e.eventLoss += t.amount;
         else if (t.type === "quest_reward") e.quest += t.amount;
         else if (t.type === "purchase") e.purchase += t.amount;
+        else if (t.type === "sale") e.sold += t.amount;
         else if (t.type === "other_gain") e.otherGain += t.amount;
         else if (t.type === "other_loss") e.otherLoss += t.amount;
       }
       if (t.type === "rent" && t.payeeId === pid) e.rentReceived += t.amount;
     }
-    e.balance = e.start - e.rentPaid + e.rentReceived + e.eventGain - e.eventLoss + e.quest - e.purchase + e.otherGain - e.otherLoss;
+    e.balance = e.start - e.rentPaid + e.rentReceived + e.eventGain - e.eventLoss + e.quest - e.purchase + e.sold + e.otherGain - e.otherLoss;
     return e;
   }
 
@@ -235,6 +243,7 @@
           <div class="kicker">Shared · Campaign status</div>
           <div class="chapters">${chapters}</div>
           <p class="note" style="margin-bottom:0">Party evidence: <strong>${clueCount}</strong> clue${clueCount === 1 ? "" : "s"} found, <strong>${unspent}</strong> unspent.</p>
+          <div class="round-line"><span>Round <strong>${state.round}</strong> · ${merchantLine()}</span><button type="button" class="btn small ghost" data-action="next-round">Next round</button></div>
         </div>
         <div class="card">
           <div class="kicker">Personal · Glory</div>
@@ -254,6 +263,8 @@
   function renderPanel() {
     switch (ui.tab) {
       case "cards": return renderCards();
+      case "armoury": return renderArmoury();
+      case "combat": return renderCombat();
       case "glory": return renderGlory();
       case "clues": return renderClues();
       case "treasury": return renderTreasury();
@@ -277,7 +288,7 @@
         <div class="card">
           <h2>How victory works</h2>
           <p><strong>Together:</strong> the party advances through Chapters I to III and either succeeds or leaves the story unresolved. Clues are shared evidence and can be spent by anyone at the finale.</p>
-          <p><strong>Alone:</strong> each player earns Glory for new clues, significant quest contributions, tournament wins and character achievements. Rent and property never earn Glory.</p>
+          <p><strong>Alone:</strong> each player earns Glory for new clues, significant quest contributions, tournament wins and character achievements. Money and gear never earn Glory.</p>
           <p><strong>At the end:</strong> announce the campaign result first. Only if the party succeeds is the player with the most Glory named Champion of Bohemia.</p>
           <h3>Latest in the chronicle</h3>
           ${recent ? `<ul style="margin:0;padding-left:1.1rem">${recent}</ul>` : '<div class="empty">Nothing recorded yet.</div>'}
@@ -414,7 +425,7 @@
         <label class="field" style="flex:2 1 200px">Note<input name="note" maxlength="120" placeholder="e.g. Talked down the bandit chief"></label>
         <button class="btn" type="submit">Award</button>
       </form>
-      <p class="note">Glory for clues is awarded automatically when a clue is recorded. Never award Glory for rent or property purchases.</p>`;
+      <p class="note">Glory for clues is awarded automatically when a clue is recorded. Never award Glory for money or buying gear.</p>`;
   }
 
   function renderClueForm() {
@@ -487,25 +498,38 @@
       </div>`;
   }
 
+  const hasLegacyRent = () => state.txns.some((t) => t.type === "rent");
+
+  function ledgerColumns() {
+    const n = (v) => fmt(v);
+    return [
+      { label: "Start", value: (e) => e.start, show: n },
+      ...(hasLegacyRent() ? [
+        { label: "Rent paid", value: (e) => e.rentPaid, show: n, cls: "neg" },
+        { label: "Rent recv.", value: (e) => e.rentReceived, show: n, cls: "pos" },
+      ] : []),
+      { label: "Event +", value: (e) => e.eventGain, show: n, cls: "pos" },
+      { label: "Event −", value: (e) => e.eventLoss, show: n, cls: "neg" },
+      { label: "Quest", value: (e) => e.quest, show: n, cls: "pos" },
+      { label: "Merchant", value: (e) => e.purchase, show: n, cls: "neg" },
+      { label: "Sold", value: (e) => e.sold, show: n, cls: "pos" },
+      { label: "Other", value: (e) => e.otherGain - e.otherLoss, show: signed },
+      { label: "Balance", value: (e) => e.balance, show: (v) => `<strong>${fmt(v)}</strong>` },
+    ];
+  }
+
   function renderTreasury() {
-    const typeOpts = TXN_TYPES.map((t) => `<option value="${t.id}">${t.label}</option>`).join("");
+    const typeOpts = TXN_TYPES.filter((t) => !t.legacy).map((t) => `<option value="${t.id}">${t.label}</option>`).join("");
+    const cols = ledgerColumns();
     const rows = state.players.map((p) => {
       const e = economy(p.id);
       return `<tr>
         <td><span class="dot" style="display:inline-block;background:${esc(p.color)}"></span> ${esc(p.name)}</td>
-        <td class="num">${fmt(e.start)}</td>
-        <td class="num neg">${fmt(e.rentPaid)}</td>
-        <td class="num pos">${fmt(e.rentReceived)}</td>
-        <td class="num pos">${fmt(e.eventGain)}</td>
-        <td class="num neg">${fmt(e.eventLoss)}</td>
-        <td class="num pos">${fmt(e.quest)}</td>
-        <td class="num neg">${fmt(e.purchase)}</td>
-        <td class="num">${signed(e.otherGain - e.otherLoss)}</td>
-        <td class="num"><strong>${fmt(e.balance)}</strong></td>
+        ${cols.map((c) => `<td class="num ${c.cls || ""}">${c.show(c.value(e))}</td>`).join("")}
       </tr>`;
     }).join("");
     const all = state.players.map((p) => economy(p.id));
-    const sum = (k) => all.reduce((a, e) => a + e[k], 0);
+    const total = (c) => all.reduce((a, e) => a + c.value(e), 0);
     const ledger = state.txns.slice().reverse().map((t) => {
       const tt = txnType(t.type);
       const who = t.type === "rent" ? `${esc(pname(t.playerId))} → ${esc(pname(t.payeeId))}` : esc(pname(t.playerId));
@@ -529,14 +553,14 @@
           <label class="field" style="flex:2 1 180px">Note<input name="note" maxlength="120" placeholder="e.g. Rattay tavern"></label>
           <button class="btn" type="submit">Record</button>
         </form>
-        <p class="note">For ordinary events, prefer the lower end of the reward range while money is plentiful. Money never earns Glory.</p>
+        <p class="note">For ordinary events, prefer the lower end of the reward range while money is plentiful. Merchant purchases are recorded automatically from the Armoury. Money never earns Glory.</p>
       </div>
       <div class="card" style="margin-bottom:14px">
         <h2>Ledger by player</h2>
         <div class="table-scroll"><table>
-          <thead><tr><th>Player</th><th class="num">Start</th><th class="num">Rent paid</th><th class="num">Rent recv.</th><th class="num">Event +</th><th class="num">Event −</th><th class="num">Quest</th><th class="num">Bought</th><th class="num">Other</th><th class="num">Balance</th></tr></thead>
+          <thead><tr><th>Player</th>${cols.map((c) => `<th class="num">${c.label}</th>`).join("")}</tr></thead>
           <tbody>${rows}</tbody>
-          <tfoot><tr><th>All</th><th class="num">${fmt(sum("start"))}</th><th class="num">${fmt(sum("rentPaid"))}</th><th class="num">${fmt(sum("rentReceived"))}</th><th class="num">${fmt(sum("eventGain"))}</th><th class="num">${fmt(sum("eventLoss"))}</th><th class="num">${fmt(sum("quest"))}</th><th class="num">${fmt(sum("purchase"))}</th><th class="num">${signed(sum("otherGain") - sum("otherLoss"))}</th><th class="num">${fmt(sum("balance"))}</th></tr></tfoot>
+          <tfoot><tr><th>All</th>${cols.map((c) => `<th class="num">${c.show(total(c))}</th>`).join("")}</tr></tfoot>
         </table></div>
       </div>
       <div class="card">
@@ -632,10 +656,10 @@
     const rows = standings().map(({ p, glory }) => {
       const e = economy(p.id);
       const clues = state.clues.filter((c) => c.discovererId === p.id).length;
-      return `<tr><td>${esc(p.name)}</td><td class="num">${glory}</td><td class="num">${clues}</td><td class="num">${fmt(e.start)}</td><td class="num">${fmt(e.balance)}</td><td class="num">${fmt(e.rentPaid)}</td><td class="num">${signed(e.eventGain - e.eventLoss)}</td><td class="num">${fmt(e.quest)}</td></tr>`;
+      return `<tr><td>${esc(p.name)}</td><td class="num">${glory}</td><td class="num">${clues}</td><td class="num">${fmt(e.start)}</td><td class="num">${fmt(e.balance)}</td><td class="num">${fmt(e.purchase)}</td><td class="num">${signed(e.eventGain - e.eventLoss)}</td><td class="num">${fmt(e.quest)}</td></tr>`;
     }).join("");
     return `<div class="table-scroll"><table>
-      <thead><tr><th>Player</th><th class="num">Glory</th><th class="num">Clues</th><th class="num">Start</th><th class="num">End</th><th class="num">Rent paid</th><th class="num">Event net</th><th class="num">Quest rewards</th></tr></thead>
+      <thead><tr><th>Player</th><th class="num">Glory</th><th class="num">Clues</th><th class="num">Start</th><th class="num">End</th><th class="num">Merchant</th><th class="num">Event net</th><th class="num">Quest rewards</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;
   }
 
@@ -646,18 +670,358 @@
 
   // ---------- reports ----------
 
+  // ---------- armoury ----------
+
+  const GEARDATA = () => window.GEAR || { rules: {}, starter: {}, weapons: [], armour: [], foes: [] };
+  const RULES = () => GEARDATA().rules;
+  const weaponById = (id) => GEARDATA().weapons.find((w) => w.id === id);
+  const armourById = (id) => GEARDATA().armour.find((a) => a.id === id);
+  const foeById = (id) => GEARDATA().foes.find((f) => f.id === id);
+
+  function kitOf(pid) {
+    const k = state.kit[pid] || {};
+    const starter = GEARDATA().starter;
+    return { weapon: k.weapon || starter.weapon, armour: k.armour || starter.armour };
+  }
+
+  function kitItems(pid) {
+    const k = kitOf(pid);
+    return { weapon: weaponById(k.weapon), armour: armourById(k.armour) };
+  }
+
+  function playerFighter(pid) {
+    const { weapon, armour } = kitItems(pid);
+    return {
+      name: pname(pid), hp: RULES().hp || 20,
+      hit: weapon ? weapon.hit : 0, damage: weapon ? weapon.damage : "1d4", pierce: weapon ? weapon.pierce || 0 : 0,
+      defence: armour ? armour.defence : 0, reduction: armour ? armour.reduction : 0, hitPenalty: armour ? armour.hitPenalty || 0 : 0,
+    };
+  }
+
+  function foeFighter(id) {
+    const f = foeById(id);
+    return { name: f.name, hp: f.hp, hit: f.hit, damage: f.damage, pierce: f.pierce || 0, defence: f.defence, reduction: f.reduction, hitPenalty: 0 };
+  }
+
+  const merchantEvery = () => Math.max(1, RULES().merchantEvery || 3);
+  const merchantOpen = () => state.round % merchantEvery() === 0;
+  const roundsToMerchant = () => (merchantEvery() - (state.round % merchantEvery())) % merchantEvery();
+  const tradeIn = (item) => (item ? Math.floor(item.price * (RULES().sellBack || 0)) : 0);
+
+  const weaponStats = (w) => `slash ${w.hit >= 0 ? "+" : ""}${w.hit} · damage ${esc(w.damage)}${w.pierce ? ` · pierces ${w.pierce}` : ""}`;
+  const armourStats = (a) => `defence ${a.defence} · blocks ${a.reduction}${a.hitPenalty ? ` · slash −${a.hitPenalty}` : ""}`;
+
+  function merchantLine() {
+    return merchantOpen()
+      ? `<strong class="pos">The merchant is open this round.</strong>`
+      : `Merchant opens in ${roundsToMerchant()} round${roundsToMerchant() === 1 ? "" : "s"} (round ${state.round + roundsToMerchant()}).`;
+  }
+
+  function renderArmoury() {
+    const kits = state.players.map((p) => {
+      const { weapon, armour } = kitItems(p.id);
+      const f = playerFighter(p.id);
+      return `
+        <div class="card kit-card">
+          <div class="row" style="align-items:center"><span class="dot" style="background:${esc(p.color)}"></span><strong style="flex:1">${esc(p.name)}</strong><span class="muted">${gr(economy(p.id).balance)}</span></div>
+          <div class="kit-line"><span class="kit-icon" aria-hidden="true">⚔</span><div><strong>${esc(weapon ? weapon.name : "None")}</strong><div class="muted">${weapon ? weaponStats(weapon) : ""}</div></div></div>
+          <div class="kit-line"><span class="kit-icon" aria-hidden="true">⛨</span><div><strong>${esc(armour ? armour.name : "None")}</strong><div class="muted">${armour ? armourStats(armour) : ""}</div></div></div>
+          <p class="note" style="margin-bottom:0">In a fight: d20 ${f.hit - f.hitPenalty >= 0 ? "+" : "−"} ${Math.abs(f.hit - f.hitPenalty)} to slash, foes need ${(RULES().baseTarget || 10) + f.defence} to hit them.</p>
+        </div>`;
+    }).join("");
+
+    const open = merchantOpen();
+    const buyer = ui.buyer && player(ui.buyer) ? ui.buyer : state.players[0].id;
+    const buyerKit = kitItems(buyer);
+    const balance = economy(buyer).balance;
+    const row = (item, slot) => {
+      const owned = buyerKit[slot];
+      const credit = tradeIn(owned);
+      const cost = item.price - credit;
+      const has = owned && owned.id === item.id;
+      const afford = balance >= cost;
+      return `<tr>
+        <td><strong>${esc(item.name)}</strong><div class="muted" style="font-size:.85rem">${esc(item.text || "")}</div></td>
+        <td>${slot === "weapon" ? weaponStats(item) : armourStats(item)}</td>
+        <td class="num">${gr(item.price)}</td>
+        <td class="num">${has ? '<span class="badge">Owned</span>' : open
+          ? `<button class="btn small" data-action="buy-item" data-slot="${slot}" data-id="${item.id}" ${afford ? "" : "disabled"} title="${credit ? `Pays ${gr(cost)} after ${gr(credit)} for the old ${esc(owned.name)}` : ""}">${cost < 0 ? `Swap (get ${gr(-cost)})` : `Buy${credit ? ` (${gr(cost)})` : ""}`}</button>`
+          : ""}</td>
+      </tr>`;
+    };
+
+    return `
+      <div class="card" style="margin-bottom:14px">
+        <div class="row" style="align-items:center">
+          <div style="flex:1;min-width:200px"><h2 style="margin-bottom:.2rem">Round ${state.round}</h2><div>${merchantLine()}</div></div>
+          <button class="btn" data-action="next-round">Next round</button>
+        </div>
+        <p class="note" style="margin-bottom:0">Press <strong>Next round</strong> once every player has taken a turn. The merchant opens every ${merchantEvery()} rounds. Everyone starts with the same kit.</p>
+      </div>
+      <div class="grid-2">${kits}</div>
+      <div class="card" style="margin-top:14px">
+        <h2>The merchant's wares</h2>
+        ${open ? `<div class="row" style="align-items:flex-end;margin-bottom:8px">
+          <label class="field" style="flex:0 1 220px">Buying for<select data-buyer>${playerOptions(buyer)}</select></label>
+          <p class="note" style="flex:1;margin:0">${esc(pname(buyer))} has ${gr(balance)}. Old gear is sold back for ${Math.round((RULES().sellBack || 0) * 100)}% of its price.</p>
+        </div>` : `<p class="note">You can look, but nothing can be bought until the merchant opens on round ${state.round + roundsToMerchant()}.</p>`}
+        <h3>Weapons</h3>
+        <div class="table-scroll"><table><thead><tr><th>Weapon</th><th>Stats</th><th class="num">Price</th><th></th></tr></thead><tbody>${GEARDATA().weapons.map((w) => row(w, "weapon")).join("")}</tbody></table></div>
+        <h3>Armour</h3>
+        <div class="table-scroll"><table><thead><tr><th>Armour</th><th>Stats</th><th class="num">Price</th><th></th></tr></thead><tbody>${GEARDATA().armour.map((a) => row(a, "armour")).join("")}</tbody></table></div>
+        <p class="note">Slash: d20 + weapon bonus must reach ${RULES().baseTarget} + the target's defence. Damage: the weapon's dice, minus what the target's armour blocks (less any pierce), at least ${RULES().minDamage}. All of these numbers live in <code>gear.js</code>.</p>
+      </div>`;
+  }
+
+  function buyItem(slot, id) {
+    const pid = ui.buyer && player(ui.buyer) ? ui.buyer : state.players[0].id;
+    const item = slot === "weapon" ? weaponById(id) : armourById(id);
+    if (!item || !merchantOpen()) return;
+    const old = kitItems(pid)[slot];
+    const credit = tradeIn(old);
+    if (economy(pid).balance < item.price - credit) { toast("Not enough Groschen"); return; }
+    commit(`${pname(pid)} buys ${item.name} for ${gr(item.price)}${credit ? ` and sells the ${old.name} for ${gr(credit)}` : ""}`, (st) => {
+      const now = Date.now();
+      st.txns.push({ id: uid(), ts: now, chapter: st.status, type: "purchase", playerId: pid, payeeId: null, amount: item.price, note: item.name });
+      if (credit) st.txns.push({ id: uid(), ts: now, chapter: st.status, type: "sale", playerId: pid, payeeId: null, amount: credit, note: old.name });
+      st.kit[pid] = Object.assign({}, kitOf(pid), { [slot]: item.id });
+    });
+    sfx("coins");
+  }
+
+  // ---------- combat ----------
+
+  const pct = (x) => `${Math.round(x * 100)}%`;
+
+  function combatantOptions(selected, { foes }) {
+    const ps = state.players.map((p) => `<option value="p:${p.id}" ${selected === "p:" + p.id ? "selected" : ""}>${esc(p.name)}</option>`).join("");
+    const fs = foes ? `<optgroup label="Foes">${GEARDATA().foes.map((f) => `<option value="f:${f.id}" ${selected === "f:" + f.id ? "selected" : ""}>${esc(f.name)}</option>`).join("")}</optgroup>` : "";
+    return foes ? `<optgroup label="Players">${ps}</optgroup>${fs}` : ps;
+  }
+
+  function fighterFromRef(ref) {
+    const [kind, id] = String(ref).split(":");
+    if (kind === "p" && player(id)) return playerFighter(id);
+    if (kind === "f" && foeById(id)) return foeFighter(id);
+    return null;
+  }
+
+  function oddsTable(A, B, rules, opts) {
+    const side = (att, def) => {
+      const hc = Combat.hitChance(att, def, rules);
+      const dmg = Combat.damageStats(att, def, false, rules);
+      const { mod, target } = Combat.slashTarget(att, def, rules);
+      const need = Math.min(Math.max(target - mod, (rules.fumbleOn || 1) + 1), rules.critOn || 20);
+      return { hc, dmg, mod, target, need, exp: Combat.expectedDamage(att, def, rules), blocked: Combat.armourAfterPierce(att, def) };
+    };
+    const a = side(A, B), b = side(B, A);
+    const sim = Combat.simulate(A, B, rules, Object.assign({ n: 3000 }, opts));
+    const col = (x, att, def) => `
+      <td>
+        <div><strong>${pct(x.hc.hit)}</strong> to hit <span class="muted">(roll ${x.need}+ on the d20: d20 ${x.mod >= 0 ? "+" : "−"} ${Math.abs(x.mod)} vs ${x.target})</span></div>
+        <div>Damage <strong>${x.dmg.min}–${x.dmg.max}</strong> <span class="muted">(${esc(att.damage)} − ${x.blocked} blocked, min ${rules.minDamage})</span></div>
+        <div>About <strong>${x.exp.toFixed(1)}</strong> damage per swing</div>
+      </td>`;
+    return `
+      <div class="table-scroll"><table class="odds">
+        <thead><tr><th></th><th>${esc(A.name)}</th><th>${esc(B.name)}</th></tr></thead>
+        <tbody>
+          <tr><th>Attacking</th>${col(a, A, B)}${col(b, B, A)}</tr>
+          <tr><th>Chance to win</th><td><strong class="big-pct">${pct(sim.a)}</strong></td><td><strong class="big-pct">${pct(sim.b)}</strong></td></tr>
+        </tbody>
+      </table></div>
+      <p class="note">${sim.draw >= 0.005 ? `Draw ${pct(sim.draw)}. ` : ""}Expected length: about ${sim.exchanges.toFixed(1)} exchange${sim.exchanges >= 1.5 ? "s" : ""}. Odds come from 3,000 simulated fights.</p>`;
+  }
+
+  function renderCombat() {
+    if (typeof Combat === "undefined") return '<div class="card"><p class="empty">Combat maths failed to load.</p></div>';
+    const rules = RULES();
+    const c = state.combat;
+    if (!c) {
+      const mode = ui.combatMode || "tournament";
+      const aRef = ui.combatA || `p:${state.players[0].id}`;
+      const bDefault = mode === "tournament" ? `p:${(state.players[1] || state.players[0]).id}` : `f:${(GEARDATA().foes[0] || {}).id}`;
+      let bRef = ui.combatB || bDefault;
+      if (mode === "tournament" && !bRef.startsWith("p:")) bRef = bDefault;
+      const A = fighterFromRef(aRef), B = fighterFromRef(bRef);
+      const limit = mode === "tournament" ? rules.tournamentExchanges : rules.fightExchanges;
+      return `
+        <div class="card">
+          <h2>Start a fight</h2>
+          <form class="row" data-form="combat-start">
+            <label class="field">Kind<select name="mode" data-combat="mode">
+              <option value="tournament" ${mode === "tournament" ? "selected" : ""}>Tournament bout</option>
+              <option value="fight" ${mode === "fight" ? "selected" : ""}>Fight</option>
+            </select></label>
+            <label class="field">Challenger<select name="a" data-combat="a">${combatantOptions(aRef, { foes: false })}</select></label>
+            <label class="field">Opponent<select name="b" data-combat="b">${combatantOptions(bRef, { foes: mode === "fight" })}</select></label>
+            <button class="btn" type="submit" ${aRef === bRef ? "disabled" : ""}>Begin</button>
+          </form>
+          <p class="note">${mode === "tournament"
+            ? `A bout lasts until someone reaches 0 HP or ${limit} exchanges pass, then the most HP left wins. The winner earns ${rules.tournamentGlory} Glory.`
+            : `${limit ? `A fight lasts up to ${limit} exchanges.` : "A fight lasts until someone drops."} Everyone starts at ${rules.hp} HP, and foes have their own HP.`}
+            Each exchange, the challenger swings first, then the opponent.</p>
+        </div>
+        ${A && B && aRef !== bRef ? `<div class="card" style="margin-top:14px"><h2>The odds</h2>${oddsTable(A, B, rules, { exchanges: limit || 0 })}</div>` : ""}`;
+    }
+
+    const A = c.A, B = c.B;
+    const limit = c.mode === "tournament" ? rules.tournamentExchanges : rules.fightExchanges;
+    const exchange = Math.floor(c.attacks / 2) + 1;
+    const [att, def] = c.next === "a" ? [A, B] : [B, A];
+    const { mod, target } = Combat.slashTarget(att, def, rules);
+    const dice = Combat.parseDice(att.damage);
+    const hpBar = (f, hp) => `
+      <div class="hp">
+        <div class="row" style="align-items:baseline"><strong style="flex:1">${esc(f.name)}</strong><span>${Math.max(0, hp)} / ${f.hp} HP</span></div>
+        <div class="hp-track"><span class="hp-fill" style="width:${Math.max(0, hp) / f.hp * 100}%"></span></div>
+      </div>`;
+
+    let step;
+    if (c.over) {
+      const winner = c.result === "a" ? A : c.result === "b" ? B : null;
+      const winnerRef = c.result === "a" ? c.aRef : c.result === "b" ? c.bRef : null;
+      const canAward = c.mode === "tournament" && winnerRef && winnerRef.startsWith("p:") && !c.awarded;
+      step = `
+        <div class="verdict">
+          <div class="kicker">${c.mode === "tournament" ? "The bout is decided" : "The fight is over"}</div>
+          <div class="big">${winner ? `${esc(winner.name)} wins` : "A draw"}</div>
+          <p class="muted">${esc(c.endReason || "")}</p>
+          <div class="row" style="justify-content:center">
+            ${canAward ? `<button class="btn" data-action="combat-award">Award ${rules.tournamentGlory} Glory to ${esc(winner.name)}</button>` : ""}
+            ${c.awarded ? '<span class="badge gold">Glory awarded</span>' : ""}
+            <button class="btn ghost" data-action="combat-close">Close the fight</button>
+          </div>
+        </div>`;
+    } else if (!c.pending) {
+      step = `
+        <h3>Roll 1 of 2 · ${esc(att.name)} slashes at ${esc(def.name)}</h3>
+        <p>Roll a d20. It hits on <strong>${Math.min(Math.max(target - mod, (rules.fumbleOn || 1) + 1), rules.critOn)}+</strong> <span class="muted">(d20 ${mod >= 0 ? "+" : "−"} ${Math.abs(mod)} must reach ${target}; ${rules.critOn} always hits and doubles the damage dice, ${rules.fumbleOn} always misses)</span>.</p>
+        <form class="row" data-form="combat-slash">
+          <label class="field" style="flex:0 1 120px">d20 roll<input type="number" name="roll" min="1" max="${rules.hitDie}" required inputmode="numeric"></label>
+          <button class="btn" type="submit">Resolve</button>
+          <button class="btn ghost" type="button" data-action="combat-auto">Roll for me</button>
+        </form>`;
+    } else {
+      const n = dice.count * (c.pending.crit ? 2 : 1);
+      step = `
+        <h3>Roll 2 of 2 · damage from ${esc(att.name)}</h3>
+        <p>${c.pending.crit ? "<strong>Critical!</strong> " : ""}The slash hit. Roll <strong>${n}d${dice.sides}</strong> and enter the total. ${dice.bonus ? `${dice.bonus > 0 ? "+" : "−"}${Math.abs(dice.bonus)} is added, ` : ""}${Combat.armourAfterPierce(att, def)} is blocked by ${esc(def.name)}'s armour.</p>
+        <form class="row" data-form="combat-damage">
+          <label class="field" style="flex:0 1 120px">Dice total<input type="number" name="roll" min="${n}" max="${n * dice.sides}" required inputmode="numeric"></label>
+          <button class="btn" type="submit">Resolve</button>
+          <button class="btn ghost" type="button" data-action="combat-auto">Roll for me</button>
+        </form>`;
+    }
+
+    const log = c.log.slice().reverse().map((l) => `<li>${esc(l)}</li>`).join("");
+    const attacksDone = c.attacks;
+    return `
+      <div class="grid-2">
+        <div class="card">
+          <h2>${c.mode === "tournament" ? "Tournament bout" : "Fight"} · exchange ${Math.min(exchange, limit || exchange)}${limit ? ` of ${limit}` : ""}</h2>
+          ${hpBar(A, c.hpA)}${hpBar(B, c.hpB)}
+          <div class="combat-step">${step}</div>
+          ${!c.over ? '<p class="note"><button class="link" data-action="combat-close">Abandon this fight</button></p>' : ""}
+        </div>
+        <div class="card">
+          <h2>The maths</h2>
+          ${log ? `<ol class="combat-log" reversed>${log}</ol>` : '<p class="muted">Each roll and its calculation will appear here.</p>'}
+          ${!c.over ? `<h3>Odds from here</h3>${oddsTable(A, B, rules, { hpA: c.hpA, hpB: c.hpB, next: c.next, exchanges: limit || 0, attacksDone })}` : ""}
+        </div>
+      </div>`;
+  }
+
+  function startCombat(mode, aRef, bRef) {
+    const A = fighterFromRef(aRef), B = fighterFromRef(bRef);
+    if (!A || !B || aRef === bRef) return;
+    commit(`${mode === "tournament" ? "Tournament bout" : "Fight"}: ${A.name} against ${B.name}`, (st) => {
+      st.combat = { id: uid(), mode, aRef, bRef, A, B, hpA: A.hp, hpB: B.hp, attacks: 0, next: "a", pending: null, log: [], over: false, result: null, awarded: false };
+    });
+    sfx("bell");
+  }
+
+  function finishIfDone(c) {
+    const rules = RULES();
+    const limit = c.mode === "tournament" ? rules.tournamentExchanges : rules.fightExchanges;
+    if (c.hpA <= 0 || c.hpB <= 0) {
+      c.over = true;
+      c.result = c.hpA > 0 ? "a" : c.hpB > 0 ? "b" : "draw";
+      c.endReason = `${c.hpA <= 0 ? c.A.name : c.B.name} has been beaten down.`;
+    } else if (limit && c.attacks >= limit * 2) {
+      c.over = true;
+      c.result = c.hpA > c.hpB ? "a" : c.hpB > c.hpA ? "b" : "draw";
+      c.endReason = `${limit} exchanges done: ${c.A.name} ${c.hpA} HP, ${c.B.name} ${c.hpB} HP.`;
+    }
+  }
+
+  function combatSlash(natural) {
+    const c = state.combat;
+    const rules = RULES();
+    if (!c || c.over || c.pending || !(natural >= 1 && natural <= rules.hitDie)) { toast(`Enter a d20 roll from 1 to ${rules.hitDie}`); return false; }
+    const [att, def] = c.next === "a" ? [c.A, c.B] : [c.B, c.A];
+    const s = Combat.resolveSlash(att, def, natural, rules);
+    const maths = `${att.name} slashes: ${natural} ${s.mod >= 0 ? "+" : "−"} ${Math.abs(s.mod)} = ${s.total} vs ${s.target}`;
+    const verdict = s.fumble ? "a natural 1, a clean miss" : s.crit ? "a natural 20, a critical hit" : s.hit ? "hit" : "miss";
+    commit(`${maths}: ${verdict}`, (st) => {
+      const cc = st.combat;
+      cc.log.push(`${maths} → ${verdict}.`);
+      if (s.hit) cc.pending = { crit: s.crit };
+      else { cc.attacks++; cc.next = cc.next === "a" ? "b" : "a"; finishIfDone(cc); }
+    });
+    sfx(s.hit ? (s.crit ? "glory" : "flip") : "undo");
+    if (state.combat.over) sfx(state.combat.result === "draw" ? "bell" : "triumph", 400);
+    return true;
+  }
+
+  function combatDamage(diceSum) {
+    const c = state.combat;
+    if (!c || c.over || !c.pending) return false;
+    const rules = RULES();
+    const [att, def] = c.next === "a" ? [c.A, c.B] : [c.B, c.A];
+    const dice = Combat.parseDice(att.damage);
+    const n = dice.count * (c.pending.crit ? 2 : 1);
+    if (!(diceSum >= n && diceSum <= n * dice.sides)) { toast(`Enter a total from ${n} to ${n * dice.sides}`); return false; }
+    const d = Combat.resolveDamage(att, def, diceSum, rules);
+    const hpLeft = (c.next === "a" ? c.hpB : c.hpA) - d.damage;
+    const maths = `damage ${diceSum}${d.bonus ? ` ${d.bonus > 0 ? "+" : "−"} ${Math.abs(d.bonus)}` : ""} − ${d.blocked} blocked = ${d.damage}${d.damage === rules.minDamage && d.raw - d.blocked < rules.minDamage ? " (minimum)" : ""}`;
+    commit(`${att.name} wounds ${def.name}: ${maths}, ${Math.max(0, hpLeft)} HP left`, (st) => {
+      const cc = st.combat;
+      if (cc.next === "a") cc.hpB -= d.damage; else cc.hpA -= d.damage;
+      cc.log.push(`${att.name} ${maths} → ${def.name} has ${Math.max(0, hpLeft)} HP.`);
+      cc.pending = null;
+      cc.attacks++;
+      cc.next = cc.next === "a" ? "b" : "a";
+      finishIfDone(cc);
+    });
+    sfx("loss");
+    if (state.combat.over) sfx(state.combat.result === "draw" ? "bell" : "triumph", 400);
+    return true;
+  }
+
+  function combatAuto() {
+    const c = state.combat;
+    if (!c || c.over) return;
+    const rules = RULES();
+    if (!c.pending) combatSlash(Combat.rollDie(rules.hitDie));
+    else {
+      const att = c.next === "a" ? c.A : c.B;
+      combatDamage(Combat.rollDamageDice(att, c.pending.crit));
+    }
+  }
+
   // ---------- post-game report ----------
 
   const ANSWER_OPTIONS = ["", "Yes", "Partly", "No", "Not sure"];
 
   const REVIEW_QUESTIONS = [
-    { id: "q1", text: "Did players choose quest actions even when property or money-making options were available?",
-      evidence: (d) => `${d.gloryCount.quest} significant quest contribution${d.gloryCount.quest === 1 ? "" : "s"} and ${d.clueCount} clue${d.clueCount === 1 ? "" : "s"} recorded, against ${d.purchaseCount} property purchase${d.purchaseCount === 1 ? "" : "s"}.` },
+    { id: "q1", text: "Did players choose quest actions even when shopping or money-making options were available?",
+      evidence: (d) => `${d.gloryCount.quest} significant quest contribution${d.gloryCount.quest === 1 ? "" : "s"} and ${d.clueCount} clue${d.clueCount === 1 ? "" : "s"} recorded, against ${d.purchaseCount} merchant purchase${d.purchaseCount === 1 ? "" : "s"}.` },
     { id: "q2", text: "Did spending clues in the finale feel valuable?",
       evidence: (d) => `${d.spentCount} of ${d.clueCount} clues spent on the final check${d.finalCheck ? `; ${d.finalCheck}` : ""}.` },
     { id: "q3", text: "Did any player become so wealthy that money stopped being a meaningful decision?",
-      evidence: (d) => d.richest ? `${d.richest.name} finished richest with ${gr(d.richest.balance)} (${d.richest.ratio}× their start). Gap to the poorest player: ${gr(d.wealthGap)}.` : "No players." },
-    { id: "q4", text: "Did the Glory leader reflect meaningful RPG contribution, rather than luck or property ownership?",
+      evidence: (d) => d.richest ? `${d.richest.name} finished richest with ${gr(d.richest.balance)} (${d.richest.ratio}× their start). Gap to the poorest player: ${gr(d.wealthGap)}. ${gr(d.merchantSpend)} was spent at the merchant.` : "No players." },
+    { id: "q4", text: "Did the Glory leader reflect meaningful RPG contribution, rather than luck or wealth?",
       evidence: (d) => !d.leaders.length ? "No Glory was awarded."
         : `${d.leaders.length > 1 ? "Tied leaders: " : ""}${d.leaders.map((l) => `${l.name} led with ${l.glory} Glory (${l.breakdown || "no entries"}) and finished ${l.wealthRank} in wealth`).join("; ")}.` },
     { id: "q5", text: "Were ordinary encounters consistently resolved within a few minutes?",
@@ -675,11 +1039,12 @@
   function reportData() {
     const econ = state.players.map((p) => ({ p, e: economy(p.id), glory: gloryOf(p.id) }));
     const sum = (k) => econ.reduce((a, x) => a + x.e[k], 0);
-    const totals = { rent: sum("rentPaid"), eventGain: sum("eventGain"), eventLoss: sum("eventLoss"), quest: sum("quest"), purchase: sum("purchase"), otherGain: sum("otherGain") };
+    const totals = { rent: sum("rentPaid"), eventGain: sum("eventGain"), eventLoss: sum("eventLoss"), quest: sum("quest"), purchase: sum("purchase"), sold: sum("sold"), otherGain: sum("otherGain") };
     const income = [
-      { id: "rent", label: "Rent", value: totals.rent, advice: "Rent is driving wealth. Consider lowering rent before touching other prices." },
+      ...(totals.rent ? [{ id: "rent", label: "Rent", value: totals.rent, advice: "Rent is driving wealth. Consider lowering rent before touching other prices." }] : []),
       { id: "events", label: "Event money", value: totals.eventGain, advice: "Events are paying out the most. Use the lower end of event reward ranges." },
       { id: "quest", label: "Quest rewards", value: totals.quest, advice: "Quest rewards are the biggest earner. Keep them noticeable but smaller." },
+      { id: "sold", label: "Gear sold", value: totals.sold, advice: "Selling old gear is paying well. Consider a lower sell-back share in gear.js." },
       { id: "other", label: "Other income", value: totals.otherGain, advice: "Unlisted income is the biggest earner. Check what was recorded as other." },
     ];
     const incomeTotal = income.reduce((a, x) => a + x.value, 0);
@@ -712,6 +1077,7 @@
       econ, totals, income, incomeTotal, top, gloryCount, glorySum,
       clueCount: state.clues.length, spentCount, finalCheck,
       purchaseCount: state.txns.filter((t) => t.type === "purchase").length,
+      merchantSpend: totals.purchase,
       richest: richestX ? { name: richestX.p.name, balance: richestX.e.balance, ratio: richestX.e.start ? (richestX.e.balance / richestX.e.start).toFixed(1) : "–" } : null,
       wealthGap: byWealth.length ? byWealth[0].e.balance - byWealth[byWealth.length - 1].e.balance : 0,
       leaders: leaderXs.map((lx) => ({
@@ -766,11 +1132,11 @@
       <div class="card" style="margin-top:14px">
         <h2>Money records</h2>
         <div class="stats">
-          ${tile("Rent paid", gr(d.totals.rent))}
+          ${tile("Spent at the merchant", gr(d.totals.purchase))}
           ${tile("Event money gained", gr(d.totals.eventGain), "pos")}
           ${tile("Event money lost", gr(d.totals.eventLoss), "neg")}
           ${tile("Quest rewards", gr(d.totals.quest), "pos")}
-          ${tile("Property purchases", gr(d.totals.purchase))}
+          ${d.totals.rent ? tile("Rent paid", gr(d.totals.rent)) : tile("Gear sold back", gr(d.totals.sold), "pos")}
         </div>
         <h3>Where players' income came from</h3>
         ${d.incomeTotal ? `<div class="bars">${bars}</div><p class="note">Largest source: <strong>${d.top.label}</strong>. ${d.top.advice}</p>` : '<div class="empty">No income recorded yet.</div>'}
@@ -809,18 +1175,19 @@
     if (state.status === "success") L.push(`**Champion of Bohemia:** ${gloryLeaders().map((p) => p.name).join(" & ")}  `);
     L.push(`**Session recorded:** ${d.sessionMinutes} minutes, ${d.clueCount} clues (${d.spentCount} spent), ${d.drawCount} scenario cards`, "");
     L.push(`## Money records`, "");
-    L.push(`| Total rent paid | Event money gained | Event money lost | Quest rewards | Property purchases |`);
-    L.push(`|---:|---:|---:|---:|---:|`);
-    L.push(`| ${d.totals.rent} | ${d.totals.eventGain} | ${d.totals.eventLoss} | ${d.totals.quest} | ${d.totals.purchase} |`, "");
+    L.push(`| Spent at merchant | Gear sold back | Event money gained | Event money lost | Quest rewards |${d.totals.rent ? " Rent paid |" : ""}`);
+    L.push(`|---:|---:|---:|---:|---:|${d.totals.rent ? "---:|" : ""}`);
+    L.push(`| ${d.totals.purchase} | ${d.totals.sold} | ${d.totals.eventGain} | ${d.totals.eventLoss} | ${d.totals.quest} |${d.totals.rent ? ` ${d.totals.rent} |` : ""}`, "");
     if (d.incomeTotal) {
       L.push(`**Where income came from:** ${d.income.map((x) => `${x.label} ${Math.round((x.value / d.incomeTotal) * 100)}%`).join(", ")}  `);
       L.push(`**Largest source:** ${d.top.label}. ${d.top.advice}`, "");
     }
-    L.push(`| Player | Glory | Clues | Start | End | Rent paid | Rent received | Event net | Quest rewards | Purchases |`);
+    L.push(`| Player | Glory | Clues | Weapon | Armour | Start | End | Merchant | Sold | Event net | Quest rewards |`);
     L.push(`|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|`);
     for (const { p, e, glory } of d.econ.slice().sort((a, b) => b.glory - a.glory)) {
       const clues = state.clues.filter((c) => c.discovererId === p.id).length;
-      L.push(`| ${p.name} | ${glory} | ${clues} | ${e.start} | ${e.balance} | ${e.rentPaid} | ${e.rentReceived} | ${e.eventGain - e.eventLoss} | ${e.quest} | ${e.purchase} |`);
+      const k = kitItems(p.id);
+      L.push(`| ${p.name} | ${glory} | ${clues} | ${k.weapon ? k.weapon.name : "–"} | ${k.armour ? k.armour.name : "–"} | ${e.start} | ${e.balance} | ${e.purchase} | ${e.sold} | ${e.eventGain - e.eventLoss} | ${e.quest} |`);
     }
     L.push("", `## The review's five questions`, "");
     REVIEW_QUESTIONS.forEach((q, i) => {
@@ -842,7 +1209,7 @@
     lines.push("");
     for (const { p, glory } of standings()) {
       const e = economy(p.id);
-      lines.push(`${p.name}: Glory ${glory}; start ${e.start} gr, end ${e.balance} gr; rent paid ${e.rentPaid}, rent received ${e.rentReceived}; events +${e.eventGain}/−${e.eventLoss}; quest rewards ${e.quest}; purchases ${e.purchase}`);
+      lines.push(`${p.name}: Glory ${glory}; start ${e.start} gr, end ${e.balance} gr; merchant ${e.purchase}, sold ${e.sold}; events +${e.eventGain}/−${e.eventLoss}; quest rewards ${e.quest}`);
     }
     return lines.join("\n");
   }
@@ -890,6 +1257,36 @@
     }
     if (a === "close-guide") { $("#guide").close(); return; }
     if (a === "draw-card") { drawCard(el.dataset.player); return; }
+    if (a === "next-round") {
+      const next = state.round + 1;
+      const opens = next % merchantEvery() === 0;
+      commit(`Round ${next} begins${opens ? ". The merchant is open" : ""}`, (st) => { st.round = next; });
+      sfx(opens ? "coins" : "bell");
+      if (opens) toast("The merchant is open this round");
+      return;
+    }
+    if (a === "buy-item") { buyItem(el.dataset.slot, el.dataset.id); return; }
+    if (a === "combat-auto") { combatAuto(); return; }
+    if (a === "combat-close") {
+      if (state.combat && !state.combat.over && !confirm("Abandon this fight? Nothing more will be recorded for it.")) return;
+      commit(state.combat && !state.combat.over ? "Fight abandoned" : "", (st) => { st.combat = null; });
+      return;
+    }
+    if (a === "combat-award") {
+      const c = state.combat;
+      if (!c || !c.over || c.awarded || c.mode !== "tournament") return;
+      const ref = c.result === "a" ? c.aRef : c.result === "b" ? c.bRef : "";
+      const pid = ref.startsWith("p:") ? ref.slice(2) : null;
+      if (!pid || !player(pid)) return;
+      const amount = RULES().tournamentGlory || 2;
+      const loser = c.result === "a" ? c.B.name : c.A.name;
+      commit(`${pname(pid)} wins the tournament bout against ${loser} (+${amount} Glory)`, (st) => {
+        st.glory.push({ id: uid(), ts: Date.now(), chapter: st.status, playerId: pid, category: "tournament", amount, note: `Bout against ${loser}` });
+        st.combat.awarded = true;
+      });
+      sfx("glory");
+      return;
+    }
     if (a === "tab") { ui.tab = el.dataset.tab; render(); return; }
     if (a === "undo") { if (undoStack.length) sfx("undo"); undo(); return; }
     if (a === "toggle-sound") {
@@ -985,6 +1382,10 @@
     ev.preventDefault();
     const f = Object.fromEntries(new FormData(form).entries());
 
+    if (kind === "combat-start") { startCombat(f.mode, f.a, f.b); return; }
+    if (kind === "combat-slash") { combatSlash(Math.trunc(Number(f.roll))); return; }
+    if (kind === "combat-damage") { combatDamage(Math.trunc(Number(f.roll))); return; }
+
     if (kind === "live-join") {
       if (state.players.length && !confirm("Joining replaces the game on this phone with the host's game. Continue?")) return;
       ui.joinCode = "";
@@ -1049,6 +1450,14 @@
       if (opt && amt) amt.value = opt.dataset.amount;
     }
     if (el.matches("[data-txn-type]")) syncPayee(el.form);
+    if (el.matches("[data-buyer]")) { ui.buyer = el.value; render(); return; }
+    if (el.matches("[data-combat]")) {
+      const key = el.dataset.combat;
+      if (key === "mode") { ui.combatMode = el.value; ui.combatB = null; }
+      else ui["combat" + key.toUpperCase()] = el.value;
+      render();
+      return;
+    }
     if (el.matches("[data-report]")) {
       const [kind, q] = el.dataset.report.split(":");
       state.report = state.report || { answers: {}, notes: {} };
