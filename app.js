@@ -39,6 +39,7 @@
 
   const TABS = [
     { id: "campaign", label: "Campaign" },
+    { id: "cards", label: "Scenario cards" },
     { id: "glory", label: "Glory" },
     { id: "clues", label: "Clues" },
     { id: "treasury", label: "Treasury" },
@@ -58,6 +59,8 @@
       glory: [],
       txns: [],
       finale: { otherBonus: 0, roll: "", target: "" },
+      deck: { pile: [], removed: [] }, // card ids still to draw; clue cards removed once drawn
+      draws: [],
       log: [],
     };
   }
@@ -240,6 +243,7 @@
 
   function renderPanel() {
     switch (ui.tab) {
+      case "cards": return renderCards();
       case "glory": return renderGlory();
       case "clues": return renderClues();
       case "treasury": return renderTreasury();
@@ -268,6 +272,115 @@
           ${recent ? `<ul style="margin:0;padding-left:1.1rem">${recent}</ul>` : '<div class="empty">Nothing recorded yet.</div>'}
         </div>
       </div>`;
+  }
+
+  // ---------- scenario cards ----------
+
+  const CARD_KINDS = { road: "On the road", social: "Social", crime: "Crime", quest: "Quest lead", tournament: "Contest" };
+  const allCards = () => window.SCENARIO_CARDS || [];
+  const cardById = (id) => allCards().find((c) => c.id === id);
+
+  function shuffle(list) {
+    const a = list.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  }
+
+  // Cards still in the draw pile, reshuffling everything not removed when it runs out.
+  function currentPile() {
+    const removed = new Set(state.deck.removed);
+    const pile = state.deck.pile.filter((id) => cardById(id) && !removed.has(id));
+    return pile.length ? pile : shuffle(allCards().filter((c) => !removed.has(c.id)).map((c) => c.id));
+  }
+
+  const rollRange = ([min, max]) => min + Math.floor(Math.random() * (max - min + 1));
+
+  function drawCard(pid) {
+    if (!player(pid) || isEnded()) return;
+    const pile = currentPile();
+    if (!pile.length) { toast("The deck is empty"); return; }
+    const card = cardById(pile[pile.length - 1]);
+    const cash = card.cash ? rollRange(card.cash) : 0;
+    const drawId = uid();
+    const name = pname(pid);
+    const parts = [];
+    if (cash) parts.push(`${cash > 0 ? "+" : "−"}${gr(Math.abs(cash))}`);
+    if (card.glory) parts.push(`+${card.glory.amount} Glory`);
+    if (card.clue) parts.push("a new clue");
+
+    commit(`${name} draws "${card.title}"${parts.length ? `: ${parts.join(", ")}` : ""}`, (st) => {
+      const now = Date.now();
+      st.deck.pile = pile.slice(0, -1);
+      const draw = { id: drawId, ts: now, chapter: st.status, cardId: card.id, playerId: pid, cash, glory: card.glory ? card.glory.amount : 0, clueId: null };
+      if (cash) {
+        st.txns.push({ id: uid(), ts: now, chapter: st.status, type: cash > 0 ? "event_gain" : "event_loss", playerId: pid, payeeId: null, amount: Math.abs(cash), note: `Card: ${card.title}`, drawId });
+      }
+      if (card.glory) {
+        st.glory.push({ id: uid(), ts: now, chapter: st.status, playerId: pid, category: card.glory.category, amount: card.glory.amount, note: `Card: ${card.title}`, drawId });
+      }
+      if (card.clue) {
+        const clueId = uid();
+        const chapter = CHAPTER_IDS.includes(st.status) ? st.status : "ch3";
+        st.clues.push({ id: clueId, ts: now, title: card.clue, discovererId: pid, chapter, glory: 1, spent: false, drawId });
+        st.glory.push({ id: uid(), ts: now, chapter, playerId: pid, category: "clue", amount: 1, note: card.clue, clueId });
+        st.deck.removed.push(card.id);
+        draw.clueId = clueId;
+      }
+      st.draws.unshift(draw);
+    });
+  }
+
+  function drawOutcome(d) {
+    const card = cardById(d.cardId);
+    const lines = [];
+    if (d.cash) lines.push(`<span class="${d.cash > 0 ? "pos" : "neg"}">${d.cash > 0 ? "+" : "−"}${gr(Math.abs(d.cash))}</span> ${d.cash > 0 ? "to" : "from"} ${esc(pname(d.playerId))}`);
+    if (d.glory && card && card.glory) lines.push(`<span class="pos">+${d.glory} Glory</span> for ${esc(pname(d.playerId))} (${esc((gloryCat(card.glory.category) || {}).label || "")})`);
+    if (d.clueId) {
+      const clue = state.clues.find((c) => c.id === d.clueId);
+      lines.push(`New clue for the party: <strong>${esc(clue ? clue.title : card && card.clue)}</strong> (+1 Glory to ${esc(pname(d.playerId))})`);
+    }
+    return lines.length ? lines.join("<br>") : '<span class="muted">No effect.</span>';
+  }
+
+  function renderCards() {
+    const ended = isEnded();
+    const buttons = state.players.map((p) => `
+      <button type="button" class="draw-btn" data-action="draw-card" data-player="${p.id}" style="--pc:${esc(p.color)}" ${ended ? "disabled" : ""}>
+        <span class="dot" style="background:${esc(p.color)}"></span>${esc(p.name)} draws
+      </button>`).join("");
+
+    const last = state.draws[0];
+    const lastCard = last && cardById(last.cardId);
+    const shown = lastCard ? `
+      <article class="scenario-card kind-${lastCard.kind}" aria-live="polite">
+        <div class="kicker">${esc(CARD_KINDS[lastCard.kind] || lastCard.kind)} · drawn by ${esc(pname(last.playerId))}</div>
+        <h3 class="scenario-title">${esc(lastCard.title)}</h3>
+        <p class="scenario-text">${esc(lastCard.text)}</p>
+        <div class="scenario-result">${drawOutcome(last)}</div>
+      </article>` : `<div class="scenario-card empty-card"><p class="empty">Choose who is drawing, and a card will be turned over and applied to them.</p></div>`;
+
+    const pileLeft = state.deck.pile.filter((id) => cardById(id) && !state.deck.removed.includes(id)).length;
+    const questLeft = allCards().filter((c) => c.clue && !state.deck.removed.includes(c.id)).length;
+    const recent = state.draws.slice(1, 9).map((d) => {
+      const c = cardById(d.cardId);
+      return `<tr><td class="muted">${time(d.ts)}</td><td>${esc(pname(d.playerId))}</td><td>${esc(c ? c.title : d.cardId)}</td><td>${drawOutcome(d)}</td></tr>`;
+    }).join("");
+
+    return `
+      <div class="grid-2">
+        <div class="card">
+          <h2>Draw a scenario</h2>
+          <p class="note">The player whose turn it is presses their own name. The card's money, Glory or clue is applied to them at once. Use ↶ Undo if the wrong name was pressed.</p>
+          <div class="draw-buttons">${buttons}</div>
+          ${ended ? '<p class="note">The campaign is over, so no more cards can be drawn.</p>' : ""}
+          <p class="muted" style="font-size:.9rem;margin-bottom:0">${pileLeft ? `${pileLeft} card${pileLeft === 1 ? "" : "s"} left before the deck is reshuffled` : "A fresh shuffle awaits"} · ${questLeft} quest lead${questLeft === 1 ? "" : "s"} still hidden in the deck</p>
+        </div>
+        ${shown}
+      </div>
+      ${recent ? `<div class="card" style="margin-top:14px"><h2>Earlier draws</h2><div class="table-scroll"><table><tbody>${recent}</tbody></table></div></div>` : ""}`;
   }
 
   function renderGloryForm() {
@@ -561,6 +674,7 @@
 
     if (a === "open-guide") { openGuide(); return; }
     if (a === "close-guide") { $("#guide").close(); return; }
+    if (a === "draw-card") { drawCard(el.dataset.player); return; }
     if (a === "tab") { ui.tab = el.dataset.tab; render(); return; }
     if (a === "undo") { undo(); return; }
 

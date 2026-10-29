@@ -197,3 +197,31 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
 .guide-body li { margin-bottom: .3rem; }
 .guide-body p { margin: .4rem 0; }
 .guide-foot { display: flex; justify-content: flex-end; padding: 10px 16px 14px; border-top: 1px solid var(--rule); }
+
+/* Scenario cards */
+.draw-buttons { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin: 10px 0; }
+.draw-btn {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 14px 10px; border-radius: var(--radius); cursor: pointer;
+  background: var(--paper-2); color: var(--ink); border: 2px solid var(--pc, var(--rule));
+  font-family: var(--display); font-size: .85rem; letter-spacing: .05em; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.draw-btn:hover:not(:disabled) { background: var(--pc, var(--accent)); color: #fff; }
+.draw-btn:disabled { opacity: .45; cursor: not-allowed; }
+.scenario-card {
+  position: relative; min-width: 0;
+  background: var(--paper); border: 1px solid var(--rule); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 18px 18px 16px;
+  outline: 2px solid var(--rule); outline-offset: -8px;
+  animation: card-turn .35s ease-out;
+}
+.scenario-card.kind-quest { outline-color: var(--gold); }
+.scenario-card.kind-crime { outline-color: var(--red); }
+.scenario-card.kind-tournament, .scenario-card.kind-social { outline-color: var(--green); }
+.scenario-card.empty-card { display: grid; place-items: center; animation: none; }
+.scenario-title { font-size: 1.3rem; color: var(--accent); margin: .3rem 0; letter-spacing: .04em; }
+.scenario-text { font-style: italic; margin: .3rem 0 .8rem; }
+.scenario-result { border-top: 1px dotted var(--rule); padding-top: 8px; }
+@keyframes card-turn { from { transform: rotateY(80deg); opacity: 0; } to { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .scenario-card { animation: none; } }
