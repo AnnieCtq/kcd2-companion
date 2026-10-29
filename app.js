@@ -44,6 +44,7 @@
     { id: "clues", label: "Clues" },
     { id: "treasury", label: "Treasury" },
     { id: "finale", label: "Finale" },
+    { id: "report", label: "Report" },
     { id: "chronicle", label: "Chronicle" },
   ];
 
@@ -61,6 +62,7 @@
       finale: { otherBonus: 0, roll: "", target: "" },
       deck: { pile: [], removed: [] }, // card ids still to draw; clue cards removed once drawn
       draws: [],
+      report: { answers: {}, notes: {} },
       log: [],
     };
   }
@@ -248,6 +250,7 @@
       case "clues": return renderClues();
       case "treasury": return renderTreasury();
       case "finale": return renderFinale();
+      case "report": return renderReport();
       case "chronicle": return renderChronicle();
       default: return renderCampaign();
     }
@@ -604,9 +607,7 @@
         <h2><span class="step-num">3</span>Records for the next playtest</h2>
         ${renderReportTable()}
         <div class="row" style="margin-top:10px">
-          <button class="btn ghost" data-action="copy-report">Copy summary</button>
-          <button class="btn ghost" data-action="export-csv">Download ledger (.csv)</button>
-          <button class="btn ghost" data-action="export-json">Save chronicle (.json)</button>
+          <button class="btn" data-action="tab" data-tab="report">Open the post-game report</button>
         </div>
       </div>`;
   }
@@ -628,6 +629,193 @@
   }
 
   // ---------- reports ----------
+
+  // ---------- post-game report ----------
+
+  const ANSWER_OPTIONS = ["", "Yes", "Partly", "No", "Not sure"];
+
+  const REVIEW_QUESTIONS = [
+    { id: "q1", text: "Did players choose quest actions even when property or money-making options were available?",
+      evidence: (d) => `${d.gloryCount.quest} significant quest contribution${d.gloryCount.quest === 1 ? "" : "s"} and ${d.clueCount} clue${d.clueCount === 1 ? "" : "s"} recorded, against ${d.purchaseCount} property purchase${d.purchaseCount === 1 ? "" : "s"}.` },
+    { id: "q2", text: "Did spending clues in the finale feel valuable?",
+      evidence: (d) => `${d.spentCount} of ${d.clueCount} clues spent on the final check${d.finalCheck ? `; ${d.finalCheck}` : ""}.` },
+    { id: "q3", text: "Did any player become so wealthy that money stopped being a meaningful decision?",
+      evidence: (d) => d.richest ? `${d.richest.name} finished richest with ${gr(d.richest.balance)} (${d.richest.ratio}× their start). Gap to the poorest player: ${gr(d.wealthGap)}.` : "No players." },
+    { id: "q4", text: "Did the Glory leader reflect meaningful RPG contribution, rather than luck or property ownership?",
+      evidence: (d) => !d.leaders.length ? "No Glory was awarded."
+        : `${d.leaders.length > 1 ? "Tied leaders: " : ""}${d.leaders.map((l) => `${l.name} led with ${l.glory} Glory (${l.breakdown || "no entries"}) and finished ${l.wealthRank} in wealth`).join("; ")}.` },
+    { id: "q5", text: "Were ordinary encounters consistently resolved within a few minutes?",
+      evidence: (d) => d.drawGapMedian != null ? `${d.drawCount} scenario cards drawn; a median of ${d.drawGapMedian} min between draws over a ${d.sessionMinutes}-minute session.` : `${d.drawCount} scenario card${d.drawCount === 1 ? "" : "s"} drawn over a ${d.sessionMinutes}-minute session. Draw cards in the app to measure encounter pace.` },
+  ];
+
+  const ordinal = (n) => n + ({ 1: "st", 2: "nd", 3: "rd" }[n] || "th"); // at most four players
+  const median = (xs) => {
+    if (!xs.length) return null;
+    const a = xs.slice().sort((x, y) => x - y);
+    const m = Math.floor(a.length / 2);
+    return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+  };
+
+  function reportData() {
+    const econ = state.players.map((p) => ({ p, e: economy(p.id), glory: gloryOf(p.id) }));
+    const sum = (k) => econ.reduce((a, x) => a + x.e[k], 0);
+    const totals = { rent: sum("rentPaid"), eventGain: sum("eventGain"), eventLoss: sum("eventLoss"), quest: sum("quest"), purchase: sum("purchase"), otherGain: sum("otherGain") };
+    const income = [
+      { id: "rent", label: "Rent", value: totals.rent, advice: "Rent is driving wealth. Consider lowering rent before touching other prices." },
+      { id: "events", label: "Event money", value: totals.eventGain, advice: "Events are paying out the most. Use the lower end of event reward ranges." },
+      { id: "quest", label: "Quest rewards", value: totals.quest, advice: "Quest rewards are the biggest earner. Keep them noticeable but smaller." },
+      { id: "other", label: "Other income", value: totals.otherGain, advice: "Unlisted income is the biggest earner. Check what was recorded as other." },
+    ];
+    const incomeTotal = income.reduce((a, x) => a + x.value, 0);
+    const top = incomeTotal ? income.slice().sort((a, b) => b.value - a.value)[0] : null;
+
+    const gloryCount = {}, glorySum = {};
+    for (const c of GLORY_CATEGORIES) { gloryCount[c.id] = 0; glorySum[c.id] = 0; }
+    for (const g of state.glory) { gloryCount[g.category] = (gloryCount[g.category] || 0) + 1; glorySum[g.category] = (glorySum[g.category] || 0) + g.amount; }
+
+    const byWealth = econ.slice().sort((a, b) => b.e.balance - a.e.balance);
+    const richestX = byWealth[0];
+    const leaders = gloryLeaders();
+    const leaderXs = leaders.length && gloryOf(leaders[0].id) > 0 ? leaders.map((l) => econ.find((x) => x.p.id === l.id)) : [];
+
+    const f = state.finale || {};
+    const spentCount = state.clues.filter((c) => c.spent).length;
+    const bonus = Math.min(BONUS_CAP, (Number(f.otherBonus) || 0) + spentCount);
+    let finalCheck = "";
+    if (f.roll !== "" && f.roll != null) {
+      const total = Number(f.roll) + bonus;
+      finalCheck = `final check ${f.roll} + ${bonus} = ${total}${f.target !== "" && f.target != null ? ` against ${f.target} (${total >= Number(f.target) ? "passed" : "failed"})` : ""}`;
+    }
+
+    const drawTimes = state.draws.map((d) => d.ts).sort((a, b) => a - b);
+    const gaps = drawTimes.slice(1).map((t, i) => (t - drawTimes[i]) / 60000);
+    const gapMedian = median(gaps);
+    const lastTs = state.log.length ? state.log[0].ts : state.createdAt;
+
+    return {
+      econ, totals, income, incomeTotal, top, gloryCount, glorySum,
+      clueCount: state.clues.length, spentCount, finalCheck,
+      purchaseCount: state.txns.filter((t) => t.type === "purchase").length,
+      richest: richestX ? { name: richestX.p.name, balance: richestX.e.balance, ratio: richestX.e.start ? (richestX.e.balance / richestX.e.start).toFixed(1) : "–" } : null,
+      wealthGap: byWealth.length ? byWealth[0].e.balance - byWealth[byWealth.length - 1].e.balance : 0,
+      leaders: leaderXs.map((lx) => ({
+        name: lx.p.name,
+        glory: lx.glory,
+        breakdown: GLORY_CATEGORIES.map((c) => {
+          const n = state.glory.filter((g) => g.playerId === lx.p.id && g.category === c.id).reduce((a, g) => a + g.amount, 0);
+          return n ? `${n} from ${c.label.toLowerCase()}` : "";
+        }).filter(Boolean).join(", "),
+        wealthRank: ordinal(byWealth.findIndex((x) => x.p.id === lx.p.id) + 1),
+      })),
+      drawCount: state.draws.length,
+      drawGapMedian: gapMedian == null ? null : Math.round(gapMedian * 10) / 10,
+      sessionMinutes: Math.max(0, Math.round((lastTs - state.createdAt) / 60000)),
+    };
+  }
+
+  function renderReport() {
+    const d = reportData();
+    const answers = (state.report && state.report.answers) || {};
+    const notes = (state.report && state.report.notes) || {};
+    const champion = state.status === "success" ? gloryLeaders().map((p) => esc(p.name)).join(" & ") : "";
+    const tile = (label, value, cls = "") => `<div class="stat"><div class="stat-label">${label}</div><div class="stat-value ${cls}">${value}</div></div>`;
+
+    const bars = d.income.map((x) => {
+      const pct = d.incomeTotal ? Math.round((x.value / d.incomeTotal) * 100) : 0;
+      return `<div class="bar-row"><span class="bar-label">${x.label}</span><span class="bar-track"><span class="bar-fill" style="width:${pct}%"></span></span><span class="bar-value">${gr(x.value)} · ${pct}%</span></div>`;
+    }).join("");
+
+    const gloryRow = GLORY_CATEGORIES.filter((c) => d.glorySum[c.id]).map((c) => `<span class="badge">${c.label}: ${signed(d.glorySum[c.id])}</span>`).join(" ");
+
+    const questions = REVIEW_QUESTIONS.map((q, i) => `
+      <div class="question">
+        <div class="question-head"><span class="step-num">${i + 1}</span><strong>${q.text}</strong></div>
+        <p class="note">From the records: ${esc(q.evidence(d))}</p>
+        <div class="row">
+          <label class="field" style="flex:0 1 140px">Answer
+            <select data-report="answers:${q.id}">${ANSWER_OPTIONS.map((o) => `<option value="${o}" ${answers[q.id] === o ? "selected" : ""}>${o || "Choose…"}</option>`).join("")}</select>
+          </label>
+          <label class="field" style="flex:3 1 240px">Notes<textarea rows="2" data-report="notes:${q.id}" placeholder="What did the table say?">${esc(notes[q.id] || "")}</textarea></label>
+        </div>
+      </div>`).join("");
+
+    return `
+      <div class="card report-head">
+        <div class="kicker">Post-game report</div>
+        <div class="big ${state.status === "success" ? "pos" : state.status === "unresolved" ? "neg" : ""}">${isEnded() ? (state.status === "success" ? "The party succeeded" : "The story remains unresolved") : `Still in ${statusLabel(state.status)}`}</div>
+        ${champion ? `<div>Champion of Bohemia: <strong style="color:var(--gold)">♛ ${champion}</strong></div>` : ""}
+        <div class="muted">${state.players.length} players · ${d.sessionMinutes} minutes recorded · ${d.clueCount} clues · ${d.drawCount} scenario cards</div>
+      </div>
+
+      <div class="card" style="margin-top:14px">
+        <h2>Money records</h2>
+        <div class="stats">
+          ${tile("Rent paid", gr(d.totals.rent))}
+          ${tile("Event money gained", gr(d.totals.eventGain), "pos")}
+          ${tile("Event money lost", gr(d.totals.eventLoss), "neg")}
+          ${tile("Quest rewards", gr(d.totals.quest), "pos")}
+          ${tile("Property purchases", gr(d.totals.purchase))}
+        </div>
+        <h3>Where players' income came from</h3>
+        ${d.incomeTotal ? `<div class="bars">${bars}</div><p class="note">Largest source: <strong>${d.top.label}</strong>. ${d.top.advice}</p>` : '<div class="empty">No income recorded yet.</div>'}
+        <h3>Starting and ending balances</h3>
+        ${renderReportTable()}
+        <h3>Glory by source</h3>
+        <div>${gloryRow || '<span class="muted">No Glory awarded.</span>'}</div>
+      </div>
+
+      <div class="card" style="margin-top:14px">
+        <h2>The review's five questions</h2>
+        <p class="note">Each question shows what the app recorded. Add the table's answer and any notes, then export the report.</p>
+        ${questions}
+      </div>
+
+      <div class="card" style="margin-top:14px">
+        <h2>Export</h2>
+        <div class="row">
+          <button class="btn" data-action="export-report">Download report (.md)</button>
+          <button class="btn ghost" data-action="copy-full-report">Copy report</button>
+          <button class="btn ghost" data-action="export-csv">Download ledger (.csv)</button>
+          <button class="btn ghost" data-action="export-json">Save chronicle (.json)</button>
+        </div>
+      </div>`;
+  }
+
+  function reportMarkdown() {
+    const d = reportData();
+    const answers = (state.report && state.report.answers) || {};
+    const notes = (state.report && state.report.notes) || {};
+    const L = [];
+    L.push(`# KCD2 RPG Monopoly: post-game report`, "");
+    L.push(`**Date:** ${new Date(state.createdAt).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })}  `);
+    L.push(`**Players:** ${state.players.map((p) => p.name).join(", ")}  `);
+    L.push(`**Campaign:** ${statusLabel(state.status)}  `);
+    if (state.status === "success") L.push(`**Champion of Bohemia:** ${gloryLeaders().map((p) => p.name).join(" & ")}  `);
+    L.push(`**Session recorded:** ${d.sessionMinutes} minutes, ${d.clueCount} clues (${d.spentCount} spent), ${d.drawCount} scenario cards`, "");
+    L.push(`## Money records`, "");
+    L.push(`| Total rent paid | Event money gained | Event money lost | Quest rewards | Property purchases |`);
+    L.push(`|---:|---:|---:|---:|---:|`);
+    L.push(`| ${d.totals.rent} | ${d.totals.eventGain} | ${d.totals.eventLoss} | ${d.totals.quest} | ${d.totals.purchase} |`, "");
+    if (d.incomeTotal) {
+      L.push(`**Where income came from:** ${d.income.map((x) => `${x.label} ${Math.round((x.value / d.incomeTotal) * 100)}%`).join(", ")}  `);
+      L.push(`**Largest source:** ${d.top.label}. ${d.top.advice}`, "");
+    }
+    L.push(`| Player | Glory | Clues | Start | End | Rent paid | Rent received | Event net | Quest rewards | Purchases |`);
+    L.push(`|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|`);
+    for (const { p, e, glory } of d.econ.slice().sort((a, b) => b.glory - a.glory)) {
+      const clues = state.clues.filter((c) => c.discovererId === p.id).length;
+      L.push(`| ${p.name} | ${glory} | ${clues} | ${e.start} | ${e.balance} | ${e.rentPaid} | ${e.rentReceived} | ${e.eventGain - e.eventLoss} | ${e.quest} | ${e.purchase} |`);
+    }
+    L.push("", `## The review's five questions`, "");
+    REVIEW_QUESTIONS.forEach((q, i) => {
+      L.push(`${i + 1}. **${q.text}**  `);
+      L.push(`   Answer: ${answers[q.id] || "_not answered_"}  `);
+      L.push(`   Records: ${q.evidence(d)}  `);
+      if (notes[q.id]) L.push(`   Notes: ${notes[q.id].replace(/\n+/g, " ")}`);
+      L.push("");
+    });
+    return L.join("\n");
+  }
 
   function summaryText() {
     const lines = [];
@@ -736,6 +924,14 @@
         .catch(() => download(`kcd2-summary-${stamp()}.txt`, text, "text/plain"));
       return;
     }
+    if (a === "copy-full-report") {
+      const text = reportMarkdown();
+      (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject())
+        .then(() => toast("Report copied"))
+        .catch(() => download(`kcd2-report-${stamp()}.md`, text, "text/markdown"));
+      return;
+    }
+    if (a === "export-report") { download(`kcd2-report-${stamp()}.md`, reportMarkdown(), "text/markdown"); return; }
     if (a === "export-csv") { download(`kcd2-ledger-${stamp()}.csv`, csv(), "text/csv"); return; }
     if (a === "export-json") { download(`kcd2-chronicle-${stamp()}.json`, JSON.stringify(state, null, 2), "application/json"); return; }
 
@@ -810,6 +1006,14 @@
       if (opt && amt) amt.value = opt.dataset.amount;
     }
     if (el.matches("[data-txn-type]")) syncPayee(el.form);
+    if (el.matches("[data-report]")) {
+      const [kind, q] = el.dataset.report.split(":");
+      state.report = state.report || { answers: {}, notes: {} };
+      state.report[kind][q] = el.value;
+      save();
+      if (kind === "answers") render();
+      return;
+    }
     if (el.matches("[data-finale]")) {
       const key = el.dataset.finale;
       let v = el.value;

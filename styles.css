@@ -225,3 +225,22 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
 .scenario-result { border-top: 1px dotted var(--rule); padding-top: 8px; }
 @keyframes card-turn { from { transform: rotateY(80deg); opacity: 0; } to { transform: none; opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .scenario-card { animation: none; } }
+
+/* Post-game report */
+.report-head { text-align: center; }
+.report-head .big { font-family: var(--display); font-size: 1.5rem; letter-spacing: .05em; margin: .2rem 0; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.stat { background: var(--paper-2); border: 1px solid var(--rule); border-radius: 4px; padding: 10px 12px; min-width: 0; }
+.stat-label { font-size: .68rem; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); }
+.stat-value { font-family: var(--display); font-size: 1.35rem; font-variant-numeric: tabular-nums; margin-top: 2px; }
+.bars { display: grid; gap: 6px; }
+.bar-row { display: grid; grid-template-columns: 110px 1fr auto; gap: 10px; align-items: center; font-size: .95rem; }
+.bar-track { height: 12px; background: var(--paper-2); border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; }
+.bar-fill { display: block; height: 100%; background: var(--gold); }
+.bar-value { font-variant-numeric: tabular-nums; color: var(--ink-soft); white-space: nowrap; }
+@media (max-width: 520px) { .bar-row { grid-template-columns: 1fr auto; } .bar-track { grid-column: 1 / -1; grid-row: 2; } }
+.question { padding: 10px 0 12px; border-bottom: 1px dotted var(--rule); }
+.question:last-child { border-bottom: 0; }
+.question-head { display: flex; gap: 6px; align-items: flex-start; }
+.question-head .step-num { flex: none; }
+textarea { resize: vertical; }
